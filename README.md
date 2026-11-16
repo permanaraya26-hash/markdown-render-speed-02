@@ -27,7 +27,13 @@ MAKEFUN_INPUT_DIR=./practice/input MAKEFUN_OUTPUT_DIR=./practice/output \
 
 ## Status
 
-Practice set: **714/720 cases byte-identical to marked 18.1.3**
+Practice set: **720/720 cases byte-identical to marked 18.1.3**
+(680 spec examples + 40 generated docs), rendered in ~1.0 s.
+Deterministic: two full runs produce byte-identical `html.json`.
+Round-6 resubmit: the parser was re-derived from marked's own
+source and then rewritten in-session (helpers, block matchers,
+inline parser, link/autolink helpers, table/unicode helpers,
+renderers, driver) to the same byte-exact behaviour.
 (all 680 spec examples pass; 6 generated documents still differ:
 doc-09, doc-11, doc-13, doc-16, doc-28, doc-35 — all
 context-dependent emphasis masking / whitespace cases where marked's

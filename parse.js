@@ -4,86 +4,113 @@
 // deterministic, no caching across cases, no input recognition.
 
 /* ------------------------------------------------------------------ */
-/* Character helpers                                                   */
+/* Small character tests                                               */
 /* ------------------------------------------------------------------ */
 
+// ASCII punctuation: the four ranges !-/  :-@  [-`  {-~.
 function isAsciiPunct(c) {
-  return (c >= 33 && c <= 47) || (c >= 58 && c <= 64) ||
-    (c >= 91 && c <= 96) || (c >= 123 && c <= 126);
+  if (c >= 33 && c <= 47) return true;
+  if (c >= 58 && c <= 64) return true;
+  if (c >= 91 && c <= 96) return true;
+  return c >= 123 && c <= 126;
 }
-function isDigit(c) { return c >= 48 && c <= 57; }
+
+function isDigit(c) {
+  return c >= 48 && c <= 57;
+}
+
 function isHex(c) {
-  return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+  if (c >= 48 && c <= 57) return true;
+  if (c >= 65 && c <= 70) return true;
+  return c >= 97 && c <= 102;
 }
+
 function hexVal(c) {
   if (c >= 48 && c <= 57) return c - 48;
   if (c >= 65 && c <= 70) return c - 55;
   return c - 87;
 }
+
+// A word character for entity names and identifiers: letters, digits,
+// underscore.
 function isWordChar(c) {
-  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) ||
-    (c >= 97 && c <= 122) || c === 95;
+  if (c >= 48 && c <= 57) return true;
+  if (c >= 65 && c <= 90) return true;
+  if (c >= 97 && c <= 122) return true;
+  return c === 95;
 }
 
 /* ------------------------------------------------------------------ */
-/* Escaping and entities                                               */
+/* Entities and HTML escaping                                          */
 /* ------------------------------------------------------------------ */
 
-// Does s starting at i (s[i] === '&') look like an entity reference?
-// Named: &word; for any word. Numeric: &#1-7 digits; or &#x1-6 hex;.
+// True when the text at s[i] (which must be '&') starts something
+// that looks like an entity reference. Named entities are &word;.
+// Numeric ones are &# followed by 1-7 decimal digits, or &#x / &#X
+// followed by 1-6 hex digits, each closed by ';'.
 function looksLikeEntity(s, i) {
   const n = s.length;
-  let j = i + 1;
-  if (j < n && s.charCodeAt(j) === 35) {
-    j++;
-    if (j < n && (s.charCodeAt(j) === 120 || s.charCodeAt(j) === 88)) {
-      j++;
-      let k = 0;
-      while (j < n && isHex(s.charCodeAt(j))) { j++; k++; }
-      return k >= 1 && k <= 6 && j < n && s.charCodeAt(j) === 59;
+  let p = i + 1;
+  if (p < n && s.charCodeAt(p) === 35) {
+    p++;
+    if (p < n && (s.charCodeAt(p) === 120 || s.charCodeAt(p) === 88)) {
+      p++;
+      let count = 0;
+      while (p < n && isHex(s.charCodeAt(p))) { p++; count++; }
+      return count >= 1 && count <= 6 && p < n && s.charCodeAt(p) === 59;
     }
-    let k = 0;
-    while (j < n && isDigit(s.charCodeAt(j))) { j++; k++; }
-    return k >= 1 && k <= 7 && j < n && s.charCodeAt(j) === 59;
+    let count = 0;
+    while (p < n && isDigit(s.charCodeAt(p))) { p++; count++; }
+    return count >= 1 && count <= 7 && p < n && s.charCodeAt(p) === 59;
   }
-  let k = 0;
-  while (j < n && isWordChar(s.charCodeAt(j))) { j++; k++; }
-  return k >= 1 && j < n && s.charCodeAt(j) === 59;
+  let count = 0;
+  while (p < n && isWordChar(s.charCodeAt(p))) { p++; count++; }
+  return count >= 1 && p < n && s.charCodeAt(p) === 59;
 }
 
-// Length of a named entity (&word;) starting at i, or 0.
+// How long a named entity (&word;) starting at i is, or 0 when the
+// text there is not one.
 function matchNamedEntity(s, i) {
   const n = s.length;
-  let j = i + 1;
-  let k = 0;
-  while (j < n && isWordChar(s.charCodeAt(j))) { j++; k++; }
-  if (k >= 1 && j < n && s.charCodeAt(j) === 59) return j + 1 - i;
+  let p = i + 1;
+  let count = 0;
+  while (p < n && isWordChar(s.charCodeAt(p))) { p++; count++; }
+  if (count >= 1 && p < n && s.charCodeAt(p) === 59) return p + 1 - i;
   return 0;
 }
 
-// Decode a numeric entity (&#...; / &#x...;) starting at i.
-// Returns {ch, len} or null. Invalid code points become U+FFFD.
+// Decode a numeric entity (&#...; or &#x...;) starting at i.
+// Returns {ch, len} or null. A code point of 0, above the Unicode
+// maximum, or inside the surrogate range becomes U+FFFD.
 function decodeNumericEntity(s, i) {
   const n = s.length;
   if (i + 1 >= n || s.charCodeAt(i + 1) !== 35) return null;
-  let j = i + 2;
+  let p = i + 2;
   let cp = 0;
-  if (j < n && (s.charCodeAt(j) === 120 || s.charCodeAt(j) === 88)) {
-    j++;
-    let k = 0;
-    while (j < n && isHex(s.charCodeAt(j))) { cp = cp * 16 + hexVal(s.charCodeAt(j)); j++; k++; }
-    if (k < 1 || k > 6 || j >= n || s.charCodeAt(j) !== 59) return null;
+  if (p < n && (s.charCodeAt(p) === 120 || s.charCodeAt(p) === 88)) {
+    p++;
+    let count = 0;
+    while (p < n && isHex(s.charCodeAt(p))) {
+      cp = cp * 16 + hexVal(s.charCodeAt(p));
+      p++;
+      count++;
+    }
+    if (count < 1 || count > 6 || p >= n || s.charCodeAt(p) !== 59) return null;
   } else {
-    let k = 0;
-    while (j < n && isDigit(s.charCodeAt(j))) { cp = cp * 10 + (s.charCodeAt(j) - 48); j++; k++; }
-    if (k < 1 || k > 7 || j >= n || s.charCodeAt(j) !== 59) return null;
+    let count = 0;
+    while (p < n && isDigit(s.charCodeAt(p))) {
+      cp = cp * 10 + (s.charCodeAt(p) - 48);
+      p++;
+      count++;
+    }
+    if (count < 1 || count > 7 || p >= n || s.charCodeAt(p) !== 59) return null;
   }
   if (cp === 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
-  return { ch: String.fromCodePoint(cp), len: j + 1 - i };
+  return { ch: String.fromCodePoint(cp), len: p + 1 - i };
 }
 
-// Escape HTML special chars. With encode=false, an '&' that starts a
-// plausible entity reference is left alone.
+// Escape the five HTML special characters. When encode is false, an
+// '&' that begins a plausible entity reference is left as-is.
 function escapeHtml(s, encode) {
   let out = '';
   for (let i = 0; i < s.length; i++) {
@@ -106,8 +133,8 @@ function escapeHtml(s, encode) {
 /* Link destinations, titles and labels                                */
 /* ------------------------------------------------------------------ */
 
-// cleanUrl: encodeURI, then turn %25 back into % (so a literal % and a
-// pre-encoded %XX both survive unchanged).
+// Clean a URL for output: encodeURI, then restore any %25 to a bare
+// '%' so a literal percent and an already-encoded %XX both survive.
 function cleanUrl(u) {
   try {
     return encodeURI(u).replace(/%25/g, '%');
@@ -116,73 +143,74 @@ function cleanUrl(u) {
   }
 }
 
-// Parse a link destination starting at s[i]. Returns {dest, end} or null.
-// The destination is the decoded (escape-processed) string, cleaned.
+// Read a link destination starting at s[i]. Returns {dest, end} or
+// null. The destination is backslash-decoded and then cleaned.
 function parseLinkDestination(s, i) {
   const n = s.length;
   if (i < n && s.charCodeAt(i) === 60) {
-    // <...> form: may contain '<', no newline, '\x' escapes processed
-    let j = i + 1;
+    // The <...> form: it may hold a '<', but no newline, and '\x'
+    // escapes are processed.
+    let p = i + 1;
     let out = '';
-    while (j < n) {
-      const c = s.charCodeAt(j);
+    while (p < n) {
+      const c = s.charCodeAt(p);
       if (c === 10) return null;
-      if (c === 62) return { dest: cleanUrl(out), end: j + 1 };
-      if (c === 92 && j + 1 < n && isAsciiPunct(s.charCodeAt(j + 1))) {
-        out += s.charAt(j + 1);
-        j += 2;
+      if (c === 62) return { dest: cleanUrl(out), end: p + 1 };
+      if (c === 92 && p + 1 < n && isAsciiPunct(s.charCodeAt(p + 1))) {
+        out += s.charAt(p + 1);
+        p += 2;
         continue;
       }
-      out += s.charAt(j);
-      j++;
+      out += s.charAt(p);
+      p++;
     }
     return null;
   }
-  let j = i;
+  let p = i;
   let depth = 0;
   let out = '';
-  while (j < n) {
-    const c = s.charCodeAt(j);
+  while (p < n) {
+    const c = s.charCodeAt(p);
     if (c === 32 || c === 10) break;
-    if (c === 92 && j + 1 < n && isAsciiPunct(s.charCodeAt(j + 1))) {
-      out += s.charAt(j + 1);
-      j += 2;
+    if (c === 92 && p + 1 < n && isAsciiPunct(s.charCodeAt(p + 1))) {
+      out += s.charAt(p + 1);
+      p += 2;
       continue;
     }
-    if (c === 40) { depth++; out += '('; j++; continue; }
+    if (c === 40) { depth++; out += '('; p++; continue; }
     if (c === 41) {
       if (depth === 0) break;
       depth--;
       out += ')';
-      j++;
+      p++;
       continue;
     }
-    out += s.charAt(j);
-    j++;
+    out += s.charAt(p);
+    p++;
   }
-  if (j === i) return null;
-  return { dest: cleanUrl(out), end: j };
+  if (p === i) return null;
+  return { dest: cleanUrl(out), end: p };
 }
 
-// Skip spaces/tabs/newlines (but not across a blank line). Returns the
-// new index, or -1 if a blank line intervenes.
+// Skip spaces, tabs and single newlines. Returns the new index, or
+// -1 when a blank line (two newlines) intervenes.
 function skipInlineSpace(s, i) {
   const n = s.length;
-  let j = i;
-  while (j < n) {
-    const c = s.charCodeAt(j);
-    if (c === 32 || c === 9) { j++; continue; }
+  let p = i;
+  while (p < n) {
+    const c = s.charCodeAt(p);
+    if (c === 32 || c === 9) { p++; continue; }
     if (c === 10) {
-      if (j + 1 < n && s.charCodeAt(j + 1) === 10) return -1;
-      j++;
+      if (p + 1 < n && s.charCodeAt(p + 1) === 10) return -1;
+      p++;
       continue;
     }
     break;
   }
-  return j;
+  return p;
 }
 
-// Parse a link title starting at s[i] ('"' or '\'' or '(').
+// Read a link title starting at s[i] ('"' or '\'' or '(').
 // Returns {title, end} or null.
 function parseLinkTitle(s, i) {
   const n = s.length;
@@ -193,36 +221,36 @@ function parseLinkTitle(s, i) {
   else if (q === 39) close = 39;
   else if (q === 40) close = 41;
   else return null;
-  let j = i + 1;
+  let p = i + 1;
   let out = '';
-  while (j < n) {
-    const c = s.charCodeAt(j);
-    if (c === close) return { title: out, end: j + 1 };
-    if (c === 92 && j + 1 < n && isAsciiPunct(s.charCodeAt(j + 1))) {
-      out += s.charAt(j + 1);
-      j += 2;
+  while (p < n) {
+    const c = s.charCodeAt(p);
+    if (c === close) return { title: out, end: p + 1 };
+    if (c === 92 && p + 1 < n && isAsciiPunct(s.charCodeAt(p + 1))) {
+      out += s.charAt(p + 1);
+      p += 2;
       continue;
     }
-    if (c === 10 && j + 1 < n && s.charCodeAt(j + 1) === 10) return null;
-    out += s.charAt(j);
-    j++;
+    if (c === 10 && p + 1 < n && s.charCodeAt(p + 1) === 10) return null;
+    out += s.charAt(p);
+    p++;
   }
   return null;
 }
 
-// Parse the tail of an inline link: s[i] === '('.
+// Read the tail of an inline link: s[i] must be '('.
 // Returns {dest, title, end} or null.
 function parseInlineLinkTail(s, i) {
   const n = s.length;
-  let j = skipInlineSpace(s, i + 1);
-  if (j === -1) return null;
-  // empty destination: '(' immediately followed by ')'
-  if (j < n && s.charCodeAt(j) === 41) return { dest: '', title: null, end: j + 1 };
-  const d = parseLinkDestination(s, j);
+  let p = skipInlineSpace(s, i + 1);
+  if (p === -1) return null;
+  // An empty destination: '(' immediately followed by ')'.
+  if (p < n && s.charCodeAt(p) === 41) return { dest: '', title: null, end: p + 1 };
+  const d = parseLinkDestination(s, p);
   if (!d) return null;
-  j = d.end;
+  p = d.end;
   let title = null;
-  const k = skipInlineSpace(s, j);
+  const k = skipInlineSpace(s, p);
   if (k === -1) return null;
   if (k < n && (s.charCodeAt(k) === 34 || s.charCodeAt(k) === 39 || s.charCodeAt(k) === 40)) {
     const t = parseLinkTitle(s, k);
@@ -230,16 +258,14 @@ function parseInlineLinkTail(s, i) {
     title = t.title;
     const m = skipInlineSpace(s, t.end);
     if (m === -1) return null;
-    j = m;
+    p = m;
   } else {
-    j = k;
+    p = k;
   }
-  if (j >= n || s.charCodeAt(j) !== 41) return null;
-  return { dest: d.dest, title, end: j + 1 };
+  if (p >= n || s.charCodeAt(p) !== 41) return null;
+  return { dest: d.dest, title, end: p + 1 };
 }
 
-// Parse a link label starting at s[i] === '['. Returns {text, end} or
-// null. A label may not contain a blank line or an unmatched '['.
 // Find the next backtick run (any length >= 1) at or after `start`,
 // but stop (return -1) at a newline: marked's label regex matches a
 // code span as run + content-with-no-backticks + run, so the closer
@@ -249,29 +275,31 @@ function parseInlineLinkTail(s, i) {
 // still closes it (cm-342/525/537).
 function findCodeSpanCloseLabel(s, start) {
   const n = s.length;
-  let i = start;
-  while (i < n) {
-    const c = s.charCodeAt(i);
+  let p = start;
+  while (p < n) {
+    const c = s.charCodeAt(p);
     if (c === 10) return -1;
-    if (c === 92) { i += 2; continue; }
-    if (c === 96) return i;
-    i++;
+    if (c === 92) { p += 2; continue; }
+    if (c === 96) return p;
+    p++;
   }
   return -1;
 }
 
+// Read a link label starting at text[i] === '['. Returns {text, end}
+// or null. A label may not contain a blank line or an unmatched '['.
 function parseLinkLabel(text, i) {
   const n = text.length;
   if (text.charCodeAt(i) !== 91) return null;
   let depth = 0;
-  let j = i;
+  let p = i;
   let start = -1;
-  while (j < n) {
-    const c = text.charCodeAt(j);
-    if (c === 92) { j += 2; continue; }
+  while (p < n) {
+    const c = text.charCodeAt(p);
+    if (c === 92) { p += 2; continue; }
     if (c === 96) {
       let run = 0;
-      while (j + run < n && text.charCodeAt(j + run) === 96) run++;
+      while (p + run < n && text.charCodeAt(p + run) === 96) run++;
       // marked's label regex matches a code span as run + content
       // with NO backticks + a run of ANY length (`` `` a ` `` closes
       // at the single backtick). If no later backtick run exists on
@@ -280,17 +308,17 @@ function parseLinkLabel(text, i) {
       // in a label). Exception: a run of 2+ backticks immediately
       // before the closing ']' (the ``+(?=]) alternative) still
       // lets the label close.
-      const close = findCodeSpanCloseLabel(text, j + run);
+      const close = findCodeSpanCloseLabel(text, p + run);
       if (close === -1) {
-        if (run >= 2 && j + run < n && text.charCodeAt(j + run) === 93) {
-          j += run;
+        if (run >= 2 && p + run < n && text.charCodeAt(p + run) === 93) {
+          p += run;
           continue;
         }
         return null;
       }
       let closeRun = 0;
       while (close + closeRun < n && text.charCodeAt(close + closeRun) === 96) closeRun++;
-      j = close + closeRun;
+      p = close + closeRun;
       continue;
     }
     // An inline tag spans through its '>', so a ']' inside a tag
@@ -298,34 +326,34 @@ function parseLinkLabel(text, i) {
     // An autolink <...> likewise spans through its '>', so a ']' inside
     // it does not close the label (cm-526/538).
     if (c === 60) {
-      const tagEnd = scanTag(text, j);
-      if (tagEnd !== -1) { j = tagEnd; continue; }
-      const html = parseInlineHtml(text, j);
-      if (html) { j = html.end; continue; }
-      const auto = tryAutolink(text, j);
-      if (auto) { j = auto.end; continue; }
+      const tagEnd = scanTag(text, p);
+      if (tagEnd !== -1) { p = tagEnd; continue; }
+      const html = parseInlineHtml(text, p);
+      if (html) { p = html.end; continue; }
+      const auto = tryAutolink(text, p);
+      if (auto) { p = auto.end; continue; }
     }
     if (c === 91) {
-      if (depth === 0) start = j + 1;
+      if (depth === 0) start = p + 1;
       depth++;
-      j++;
+      p++;
       continue;
     }
     if (c === 93) {
       depth--;
       if (depth === 0) {
-        const label = text.slice(start, j);
+        const label = text.slice(start, p);
         // A label may span lines but may not contain a blank line
         // (cm-208: [\nfoo\n] is valid; a blank line inside is not).
         const trimmed = label.replace(/^[ \t\n]+/, '').replace(/[ \t\n]+$/, '');
         if (/\n[ \t]*\n/.test(trimmed)) return null;
-        return { text: label, end: j + 1 };
+        return { text: label, end: p + 1 };
       }
       if (depth < 0) return null;
-      j++;
+      p++;
       continue;
     }
-    j++;
+    p++;
   }
   return null;
 }
@@ -359,15 +387,15 @@ function hasUnescapedBracket(s) {
 // Returns the index of the run, or -1.
 function findCodeSpanClose(s, start, run) {
   const n = s.length;
-  let i = start;
-  while (i < n) {
-    if (s.charCodeAt(i) === 96) {
+  let p = start;
+  while (p < n) {
+    if (s.charCodeAt(p) === 96) {
       let r = 0;
-      while (i + r < n && s.charCodeAt(i + r) === 96) r++;
-      if (r === run) return i;
-      i += r;
+      while (p + r < n && s.charCodeAt(p + r) === 96) r++;
+      if (r === run) return p;
+      p += r;
     } else {
-      i++;
+      p++;
     }
   }
   return -1;
@@ -389,86 +417,87 @@ const BLOCK_TAGS = new Set([
   'title', 'tr', 'track', 'ul',
 ]);
 
-// Scan one HTML tag starting at s[i] === '<'. Returns the index just past
-// the closing '>' (or '/>'), or -1 when the tag is not complete/valid.
+// Scan one HTML tag starting at s[i] === '<'. Returns the index just
+// past the closing '>' (or '/>'), or -1 when the tag is not
+// complete/valid.
 function scanTag(s, i) {
   const n = s.length;
-  let j = i + 1;
-  const closing = j < n && s.charCodeAt(j) === 47;
-  if (closing) j++; // '/'
-  const nameStart = j;
+  let p = i + 1;
+  const closing = p < n && s.charCodeAt(p) === 47;
+  if (closing) p++; // '/'
+  const nameStart = p;
   // The tag name must start with a letter (cm-618: <33>, <__> are not
   // tags).
-  if (j < n) {
-    const c0 = s.charCodeAt(j);
+  if (p < n) {
+    const c0 = s.charCodeAt(p);
     if (!((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122))) return -1;
   }
-  while (j < n) {
-    const c = s.charCodeAt(j);
-    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45) j++;
+  while (p < n) {
+    const c = s.charCodeAt(p);
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45) p++;
     else break;
   }
-  if (j === nameStart) return -1;
+  if (p === nameStart) return -1;
   // After the tag name, whitespace, '>' or '/' must follow; a ':' or
   // '.' directly after the name (cm-609 <m:abc>, cm-610 <foo.bar.baz>)
   // is not a valid tag.
-  if (j < n) {
-    const c = s.charCodeAt(j);
+  if (p < n) {
+    const c = s.charCodeAt(p);
     if (c !== 32 && c !== 9 && c !== 10 && c !== 62 && c !== 47) return -1;
   }
   // A closing tag takes no attributes (cm-624: </a href="foo"> is not
   // a tag).
   if (closing) {
-    while (j < n && (s.charCodeAt(j) === 32 || s.charCodeAt(j) === 9 || s.charCodeAt(j) === 10)) j++;
-    if (j < n && s.charCodeAt(j) === 62) return j + 1;
+    while (p < n && (s.charCodeAt(p) === 32 || s.charCodeAt(p) === 9 || s.charCodeAt(p) === 10)) p++;
+    if (p < n && s.charCodeAt(p) === 62) return p + 1;
     return -1;
   }
-  while (true) {
-    while (j < n && (s.charCodeAt(j) === 32 || s.charCodeAt(j) === 9 || s.charCodeAt(j) === 10)) j++;
-    if (j >= n) return -1;
-    const c = s.charCodeAt(j);
-    if (c === 62) return j + 1; // '>'
+  for (;;) {
+    while (p < n && (s.charCodeAt(p) === 32 || s.charCodeAt(p) === 9 || s.charCodeAt(p) === 10)) p++;
+    if (p >= n) return -1;
+    const c = s.charCodeAt(p);
+    if (c === 62) return p + 1; // '>'
     if (c === 47) {
       // '/' must be immediately followed by '>' (<bar/ > is not a tag)
-      if (j + 1 < n && s.charCodeAt(j + 1) === 62) return j + 2;
+      if (p + 1 < n && s.charCodeAt(p + 1) === 62) return p + 2;
       return -1;
     }
-    const aStart = j;
-    while (j < n) {
-      const d = s.charCodeAt(j);
+    const aStart = p;
+    while (p < n) {
+      const d = s.charCodeAt(p);
       if ((d >= 65 && d <= 90) || (d >= 97 && d <= 122) || (d >= 48 && d <= 57) ||
-        d === 45 || d === 95 || d === 58 || d === 46) j++;
+        d === 45 || d === 95 || d === 58 || d === 46) p++;
       else break;
     }
-    if (j === aStart) return -1;
-    while (j < n && (s.charCodeAt(j) === 32 || s.charCodeAt(j) === 9)) j++;
-    if (j < n && s.charCodeAt(j) === 61) {
-      j++;
-      while (j < n && (s.charCodeAt(j) === 32 || s.charCodeAt(j) === 9)) j++;
-      if (j >= n) return -1;
-      const q = s.charCodeAt(j);
+    if (p === aStart) return -1;
+    while (p < n && (s.charCodeAt(p) === 32 || s.charCodeAt(p) === 9)) p++;
+    if (p < n && s.charCodeAt(p) === 61) {
+      p++;
+      while (p < n && (s.charCodeAt(p) === 32 || s.charCodeAt(p) === 9)) p++;
+      if (p >= n) return -1;
+      const q = s.charCodeAt(p);
       if (q === 34 || q === 39) {
-        j++;
-        while (j < n && s.charCodeAt(j) !== q) j++;
-        if (j >= n) return -1;
-        j++;
+        p++;
+        while (p < n && s.charCodeAt(p) !== q) p++;
+        if (p >= n) return -1;
+        p++;
       } else {
-        const vStart = j;
-        while (j < n) {
-          const d = s.charCodeAt(j);
+        const vStart = p;
+        while (p < n) {
+          const d = s.charCodeAt(p);
           // An unquoted value cannot contain whitespace (space, tab,
           // or newline), '"', "'", '=', '<', '>' or '`'.
           if (d === 32 || d === 9 || d === 10 || d === 34 || d === 39 || d === 61 ||
             d === 60 || d === 62 || d === 96) break;
-          j++;
+          p++;
         }
-        if (j === vStart) return -1;
+        if (p === vStart) return -1;
       }
       // After a value, whitespace, '>' or '/' must follow before the
       // next attribute (cm-622: <a href='bar'title=title> is not a
       // tag).
-      if (j < n) {
-        const c2 = s.charCodeAt(j);
+      if (p < n) {
+        const c2 = s.charCodeAt(p);
         if (c2 !== 32 && c2 !== 9 && c2 !== 10 && c2 !== 62 && c2 !== 47) return -1;
       }
     }
@@ -618,7 +647,7 @@ function newBlock(type, parent) {
     info: '',
     closed: false,    // fenced code / html block ended properly
     htmlType: 0,      // html block type 1-7
-    htmlTag: '',       // html block type 1: opening element name
+    htmlTag: '',      // html block type 1: opening element name
     htmlEndedBlank: false,
     bullet: '',       // list: bullet char
     delim: '',        // list: '.' or ')'
@@ -676,9 +705,9 @@ function htmlBlockType(s) {
   // type 7: a complete open or closing tag alone on the line
   const end = scanTag(s, 0);
   if (end === -1) return 0;
-  let j = end;
-  while (j < s.length && (s.charCodeAt(j) === 32 || s.charCodeAt(j) === 9)) j++;
-  if (j === s.length) return 7;
+  let p = end;
+  while (p < s.length && (s.charCodeAt(p) === 32 || s.charCodeAt(p) === 9)) p++;
+  if (p === s.length) return 7;
   return 0;
 }
 
@@ -699,13 +728,13 @@ function matchListItem(line) {
     num = 0;
     markerWidth = 1;
   } else if (isDigit(c)) {
-    let j = line.pos;
+    let p = line.pos;
     let digits = 0;
-    while (j < line.s.length && isDigit(line.s.charCodeAt(j)) && digits < 10) { j++; digits++; }
+    while (p < line.s.length && isDigit(line.s.charCodeAt(p)) && digits < 10) { p++; digits++; }
     if (digits === 0 || digits > 9) { line.restore(save); return null; }
-    const d = line.s.charCodeAt(j);
+    const d = line.s.charCodeAt(p);
     if (d !== 46 && d !== 41) { line.restore(save); return null; }
-    num = parseInt(line.s.slice(line.pos, j), 10);
+    num = parseInt(line.s.slice(line.pos, p), 10);
     marker = 'ordered';
     delim = String.fromCharCode(d);
     markerWidth = digits + 1;
@@ -1848,6 +1877,8 @@ class Parser {
 // header + delimiter row. A whitespace-only line inside such a paragraph
 // is a table row of empty cells, not a paragraph ender (a tab-only line
 // between table rows is a row; a truly empty line still ends the table).
+// Is a paragraph's literal a table? It needs at least two lines
+// whose cell counts match, with the second line a delimiter row.
 function isTableCandidate(literal) {
   const lines = literal.split('\n');
   if (lines.length < 2) return false;
@@ -1949,6 +1980,8 @@ for (const c of '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~') ASCII_PUNCT.add(c.charCode
 
 const UNICODE_PUNCT_RE = /[\p{P}\p{S}]/u;
 
+// The code point just before index i in s (handles a surrogate pair),
+// or -1 at the start.
 function codePointBefore(s, i) {
   if (i <= 0) return -1;
   const c = s.charCodeAt(i - 1);
@@ -1959,12 +1992,16 @@ function codePointBefore(s, i) {
   return c;
 }
 
+// Is this code point a Unicode space (for delimiter flanking)?
 function isUnicodeSpaceCp(cp) {
   return cp === 32 || cp === 9 || cp === 10 || cp === 13 || cp === 11 || cp === 12 ||
     cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) ||
     cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000;
 }
 
+// Is this code point Unicode punctuation (for delimiter flanking)?
+// ASCII punctuation is checked against the ASCII set; anything else
+// uses the Unicode P/S categories.
 function isUnicodePunctCp(cp) {
   if (cp < 0) return false;
   if (cp < 128) return ASCII_PUNCT.has(cp);
@@ -2002,10 +2039,10 @@ function parseInlineHtml(s, i) {
       return { text: s.slice(i, end + 3), end: end + 3 };
     }
     // declaration <!A ...>
-    let j = i + 2;
-    while (j < n && s.charCodeAt(j) !== 62) j++;
-    if (j >= n) return null;
-    return { text: s.slice(i, j + 1), end: j + 1 };
+    let p = i + 2;
+    while (p < n && s.charCodeAt(p) !== 62) p++;
+    if (p >= n) return null;
+    return { text: s.slice(i, p + 1), end: p + 1 };
   }
   if (s.charCodeAt(i + 1) === 63) {
     // processing instruction <? ... ?>
@@ -2102,47 +2139,51 @@ function emStrongMask(s, refs) {
   return t;
 }
 
+// Parse inline markdown in `s` into a node list (with a dummy head).
+// `refs` is the link-reference map. Returns the head node; the list
+// runs head.next ... tail. Delimiter nodes are linked into a second
+// chain (dNext/dPrev) for emphasis processing.
 function parseInlineNodes(s, refs) {
   const n = s.length;
   const head = { t: 'head', next: null, prev: null };
   const dHead = { t: 'dhead', dNext: null, dPrev: null };
-  let tail = head;
-  let dTail = dHead;
-  let buf = '';
-  let bufRaw = false; // true when buf holds raw (unescaped) text
+  let last = head;
+  let dLast = dHead;
+  let pending = '';
+  let pendingRaw = false; // true when pending holds raw (unescaped) text
 
-  function flush() {
-    if (buf.length) {
-      const nd = { t: bufRaw ? 'raw' : 'text', s: buf, next: null, prev: tail };
-      tail.next = nd;
-      tail = nd;
-      buf = '';
+  function flushPending() {
+    if (pending.length) {
+      const nd = { t: pendingRaw ? 'raw' : 'text', s: pending, next: null, prev: last };
+      last.next = nd;
+      last = nd;
+      pending = '';
     }
-    bufRaw = false;
+    pendingRaw = false;
   }
-  function addText(str) {
-    if (bufRaw) flush();
-    buf += str;
+  function pushText(str) {
+    if (pendingRaw) flushPending();
+    pending += str;
   }
-  function addRaw(str) {
-    if (!bufRaw) flush();
-    bufRaw = true;
-    buf += str;
+  function pushRaw(str) {
+    if (!pendingRaw) flushPending();
+    pendingRaw = true;
+    pending += str;
   }
-  function append(nd) {
-    flush();
-    nd.prev = tail;
+  function pushNode(nd) {
+    flushPending();
+    nd.prev = last;
     nd.next = null;
-    tail.next = nd;
-    tail = nd;
+    last.next = nd;
+    last = nd;
   }
-  function addDelim(ch, len, canOpen, canClose, pos) {
-    flush();
-    const nd = { t: 'delim', ch, len, canOpen, canClose, pos, next: null, prev: tail, dNext: null, dPrev: dTail };
-    tail.next = nd;
-    tail = nd;
-    dTail.dNext = nd;
-    dTail = nd;
+  function pushDelim(ch, len, canOpen, canClose, pos) {
+    flushPending();
+    const nd = { t: 'delim', ch, len, canOpen, canClose, pos, next: null, prev: last, dNext: null, dPrev: dLast };
+    last.next = nd;
+    last = nd;
+    dLast.dNext = nd;
+    dLast = nd;
   }
 
   // Remove `localText` from the end of the pending output (the buffer
@@ -2153,11 +2194,11 @@ function parseInlineNodes(s, refs) {
   // (cm-606: the '+' in <foo\+@bar.example.com>) is not part of an
   // email address. Verifies first so a mismatch leaves the output
   // untouched.
-  function removeLocalPart(localText) {
+  function stripLocalPart(localText) {
     // Phase 1: verify the pending output ends with localText, counting
     // only plain text and delimiter nodes (not raw/escaped text).
-    let collected = bufRaw ? '' : buf;
-    let nd = tail;
+    let collected = pendingRaw ? '' : pending;
+    let nd = last;
     while (collected.length < localText.length && nd && nd !== head) {
       if (nd.t === 'text') collected = nd.s + collected;
       else if (nd.t === 'delim') collected = nd.ch.repeat(nd.len) + collected;
@@ -2166,23 +2207,23 @@ function parseInlineNodes(s, refs) {
     if (!collected.endsWith(localText)) return false;
     // Phase 2: remove it (verified to match).
     let remaining = localText;
-    if (buf.length && !bufRaw) {
-      const take = Math.min(buf.length, remaining.length);
-      buf = buf.slice(0, buf.length - take);
-      if (!buf.length) bufRaw = false;
+    if (pending.length && !pendingRaw) {
+      const take = Math.min(pending.length, remaining.length);
+      pending = pending.slice(0, pending.length - take);
+      if (!pending.length) pendingRaw = false;
       remaining = remaining.slice(0, remaining.length - take);
       if (!remaining.length) return true;
     }
     while (remaining.length) {
-      const nd2 = tail;
+      const nd2 = last;
       if (!nd2 || nd2 === head) return false;
       if (nd2.t === 'text') {
         const take = Math.min(nd2.s.length, remaining.length);
         nd2.s = nd2.s.slice(0, nd2.s.length - take);
         remaining = remaining.slice(0, remaining.length - take);
         if (!nd2.s.length) {
-          tail = nd2.prev;
-          tail.next = null;
+          last = nd2.prev;
+          last.next = null;
         }
         if (!remaining.length) return true;
       } else if (nd2.t === 'delim') {
@@ -2196,11 +2237,11 @@ function parseInlineNodes(s, refs) {
         nd2.len -= take;
         remaining = remaining.slice(0, remaining.length - take);
         if (nd2.len === 0) {
-          tail = nd2.prev;
-          tail.next = null;
+          last = nd2.prev;
+          last.next = null;
           if (nd2.dPrev) nd2.dPrev.dNext = nd2.dNext;
           if (nd2.dNext) nd2.dNext.dPrev = nd2.dPrev;
-          if (dTail === nd2) dTail = nd2.dPrev;
+          if (dLast === nd2) dLast = nd2.dPrev;
         }
         if (!remaining.length) return true;
       } else {
@@ -2230,14 +2271,14 @@ function parseInlineNodes(s, refs) {
     // ---- newline: soft or hard break -------------------------------
     if (c === 10) {
       let spaces = 0;
-      if (!bufRaw) {
-        let k = buf.length;
-        while (k > 0 && buf.charCodeAt(k - 1) === 32) { k--; spaces++; }
-        if (spaces >= 2) buf = buf.slice(0, buf.length - spaces);
+      if (!pendingRaw) {
+        let k = pending.length;
+        while (k > 0 && pending.charCodeAt(k - 1) === 32) { k--; spaces++; }
+        if (spaces >= 2) pending = pending.slice(0, pending.length - spaces);
       }
       const hard = spaces >= 2;
-      if (hard) append({ t: 'br' });
-      else append({ t: 'soft' });
+      if (hard) pushNode({ t: 'br' });
+      else pushNode({ t: 'soft' });
       i++;
       // After a hard break, the next line's leading spaces/tabs are
       // stripped (cm-636/637); a soft break keeps them.
@@ -2252,16 +2293,16 @@ function parseInlineNodes(s, refs) {
       if (i + 1 < n) {
         const d = s.charCodeAt(i + 1);
         if (d === 10) {
-          append({ t: 'br' });
+          pushNode({ t: 'br' });
           i += 2;
           while (i < n && (s.charCodeAt(i) === 32 || s.charCodeAt(i) === 9)) i++;
           continue;
         }
         // an escaped punctuation char is emitted already-escaped, so
         // it can never be mistaken for an entity or markup
-        if (isAsciiPunct(d)) { addRaw(escapeHtml(s.charAt(i + 1), true)); i += 2; continue; }
+        if (isAsciiPunct(d)) { pushRaw(escapeHtml(s.charAt(i + 1), true)); i += 2; continue; }
       }
-      addText('\\');
+      pushText('\\');
       i++;
       continue;
     }
@@ -2278,11 +2319,11 @@ function parseInlineNodes(s, refs) {
             content.charCodeAt(content.length - 1) === 32 && /[^ ]/.test(content)) {
           content = content.slice(1, -1);
         }
-        append({ t: 'code', s: content });
+        pushNode({ t: 'code', s: content });
         i = close + run;
         continue;
       }
-      addText('`'.repeat(run));
+      pushText('`'.repeat(run));
       i += run;
       continue;
     }
@@ -2290,10 +2331,10 @@ function parseInlineNodes(s, refs) {
     // ---- entity ----------------------------------------------------
     if (c === 38) {
       const dec = decodeNumericEntity(s, i);
-      if (dec) { addRaw(escapeHtml(dec.ch, true)); i += dec.len; continue; }
+      if (dec) { pushRaw(escapeHtml(dec.ch, true)); i += dec.len; continue; }
       const ent = matchNamedEntity(s, i);
-      if (ent) { addRaw(s.slice(i, i + ent)); i += ent; continue; }
-      addText('&');
+      if (ent) { pushRaw(s.slice(i, i + ent)); i += ent; continue; }
+      pushText('&');
       i++;
       continue;
     }
@@ -2302,27 +2343,27 @@ function parseInlineNodes(s, refs) {
     if (c === 60) {
       const auto = tryAutolink(s, i);
       if (auto) {
-        append(makeAutolinkNode(auto.text, auto.href));
+        pushNode(makeAutolinkNode(auto.text, auto.href));
         i = auto.end;
         continue;
       }
       const tag = parseInlineHtml(s, i);
       if (tag) {
-        append({ t: 'html', s: tag.text });
+        pushNode({ t: 'html', s: tag.text });
         i = tag.end;
         continue;
       }
-      addText('<');
+      pushText('<');
       i++;
       continue;
     }
 
     // ---- [ : link or image -----------------------------------------
     if (c === 91) {
-      const res = tryLink(s, i, refs, buf, bufRaw);
+      const res = tryLink(s, i, refs, pending, pendingRaw);
       if (res) {
-        if (res.isImage) buf = res.buf; // the '!' was consumed from the buffer
-        append(res.node);
+        if (res.isImage) pending = res.buf; // the '!' was consumed from the buffer
+        pushNode(res.node);
         i = res.end;
         continue;
       }
@@ -2332,13 +2373,13 @@ function parseInlineNodes(s, refs) {
       // delimiters inside the label (doc-16/18/20/28). Find the ']'
       // that the '(' belongs to and mask up to it.
       if (!parseLinkLabel(s, i)) {
-        let j = i + 1;
-        while (j < n && s.charCodeAt(j) !== 10 && s.charCodeAt(j) !== 93) j++;
-        if (j < n && s.charCodeAt(j) === 93 && j + 1 < n && s.charCodeAt(j + 1) === 40) {
-          failedLabelEnd = j;
+        let p = i + 1;
+        while (p < n && s.charCodeAt(p) !== 10 && s.charCodeAt(p) !== 93) p++;
+        if (p < n && s.charCodeAt(p) === 93 && p + 1 < n && s.charCodeAt(p + 1) === 40) {
+          failedLabelEnd = p;
         }
       }
-      addText('[');
+      pushText('[');
       i++;
       continue;
     }
@@ -2351,18 +2392,18 @@ function parseInlineNodes(s, refs) {
       // a link label, a code span or an HTML tag): it is literal
       // text, never a delimiter.
       if (masked && masked[i] !== s[i]) {
-        addText(String.fromCharCode(c).repeat(run));
+        pushText(String.fromCharCode(c).repeat(run));
         i += run;
         continue;
       }
       // Inside a failed link label (see above) the delimiters are
       // literal text: marked's emStrong mask hides them there.
       if (failedLabelEnd !== -1 && i < failedLabelEnd) {
-        addText(String.fromCharCode(c).repeat(run));
+        pushText(String.fromCharCode(c).repeat(run));
         i += run;
         continue;
       }
-      if (c === 126 && run >= 3) { addText('~'.repeat(run)); i += run; continue; }
+      if (c === 126 && run >= 3) { pushText('~'.repeat(run)); i += run; continue; }
       // the start/end of the string count as whitespace for flanking
       const before = i > 0 ? codePointBefore(s, i) : 10;
       const after = i + run < n ? s.codePointAt(i + run) : 10;
@@ -2380,7 +2421,7 @@ function parseInlineNodes(s, refs) {
         canOpen = leftFlanking;
         canClose = rightFlanking;
       }
-      addDelim(String.fromCharCode(c), run, canOpen, canClose, i);
+      pushDelim(String.fromCharCode(c), run, canOpen, canClose, i);
       i += run;
       continue;
     }
@@ -2391,19 +2432,19 @@ function parseInlineNodes(s, refs) {
     if (!inLink && c === 119 && s.startsWith('www.', i) && canStartExtended(s, i)) {
       const ext = tryExtendedAutolink(s, i, false);
       if (ext) {
-        append(makeAutolinkNode(ext.text, ext.href));
+        pushNode(makeAutolinkNode(ext.text, ext.href));
         i = ext.end;
         continue;
       }
     }
     if (!inLink && c === 58) {
       // scheme autolink: the buffer must end with a valid scheme
-      const sc = matchSchemeSuffix(buf, bufRaw, s, i);
+      const sc = matchSchemeSuffix(pending, pendingRaw, s, i);
       if (sc !== -1) {
         const ext = tryExtendedAutolink(s, sc, true);
         if (ext) {
-          buf = buf.slice(0, buf.length - (i - sc));
-          append(makeAutolinkNode(ext.text, ext.href));
+          pending = pending.slice(0, pending.length - (i - sc));
+          pushNode(makeAutolinkNode(ext.text, ext.href));
           i = ext.end;
           continue;
         }
@@ -2414,7 +2455,7 @@ function parseInlineNodes(s, refs) {
       // (not a domain char) only when an unmatched '_' opener is
       // pending in the delimiter chain.
       let trimUnd = false;
-      for (let d = dTail; d && d !== dHead; d = d.dPrev) {
+      for (let d = dLast; d && d !== dHead; d = d.dPrev) {
         if (d.t === 'delim' && d.ch === '_' && d.len > 0 && d.canOpen) { trimUnd = true; break; }
       }
       const em = tryExtendedEmail(s, i, trimUnd);
@@ -2423,8 +2464,8 @@ function parseInlineNodes(s, refs) {
         // output (it may span delimiter nodes, e.g. the '_' in
         // a.b-c_d@a.b)
         const localText = s.slice(em.start, i);
-        if (removeLocalPart(localText)) {
-          append(makeAutolinkNode(em.text, em.href));
+        if (stripLocalPart(localText)) {
+          pushNode(makeAutolinkNode(em.text, em.href));
           i = em.end;
           continue;
         }
@@ -2432,14 +2473,15 @@ function parseInlineNodes(s, refs) {
     }
 
     // ---- ordinary character ----------------------------------------
-    addText(s.charAt(i));
+    pushText(s.charAt(i));
     i++;
   }
-  flush();
+  flushPending();
   processEmphasis(head, dHead, s, masked, refs);
   return head;
 }
 
+// The last node of a list (null when the list is empty).
 function nodeTail(head) {
   let nd = head;
   while (nd.next) nd = nd.next;
@@ -2466,14 +2508,14 @@ function canStartExtended(s, i) {
 // Autolink <scheme:...> or <email>. Returns {text, href, end} or null.
 function tryAutolink(s, i) {
   const n = s.length;
-  let j = i + 1;
-  while (j < n) {
-    const c = s.charCodeAt(j);
+  let p = i + 1;
+  while (p < n) {
+    const c = s.charCodeAt(p);
     if (c === 32 || c === 10 || c === 60 || c === 62) break;
-    j++;
+    p++;
   }
-  if (j >= n || s.charCodeAt(j) !== 62) return null;
-  const inner = s.slice(i + 1, j);
+  if (p >= n || s.charCodeAt(p) !== 62) return null;
+  const inner = s.slice(i + 1, p);
   if (!inner) return null;
   // scheme: [A-Za-z][A-Za-z0-9+.-]{1,31}: followed by a non-empty rest
   // (cm-598 <a+b+c:d>, cm-601 <localhost:5001/foo>; no '@' or ':/'
@@ -2481,14 +2523,14 @@ function tryAutolink(s, i) {
   const m = inner.match(/^([A-Za-z][A-Za-z0-9+.-]{1,31}):/);
   if (m) {
     if (inner.length > m[0].length) {
-      return { text: inner, href: cleanUrl(inner), end: j + 1 };
+      return { text: inner, href: cleanUrl(inner), end: p + 1 };
     }
     return null;
   }
   // email: must be a valid email address (cm-606: a backslash in the
   // address makes it literal, not a link).
   if (/^[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(inner)) {
-    return { text: inner, href: cleanUrl('mailto:' + inner), end: j + 1 };
+    return { text: inner, href: cleanUrl('mailto:' + inner), end: p + 1 };
   }
   return null;
 }
@@ -2501,14 +2543,14 @@ function tryAutolink(s, i) {
 function tryExtendedAutolink(s, i, isScheme) {
   if (inLink) return null;
   const n = s.length;
-  let j = i;
-  while (j < n) {
-    const c = s.charCodeAt(j);
+  let p = i;
+  while (p < n) {
+    const c = s.charCodeAt(p);
     // stop at whitespace, '<' or '>' (cm-598/601: the '>' ends it)
     if (c === 32 || c === 10 || c === 60 || c === 62) break;
-    j++;
+    p++;
   }
-  const end = trimAutolinkEnd(s, i, j);
+  const end = trimAutolinkEnd(s, i, p);
   const text = s.slice(i, end);
   if (!text) return null;
   if (isScheme) {
@@ -2533,7 +2575,7 @@ function tryExtendedAutolink(s, i, isScheme) {
       // domain ending in '-' or '_' is not a link at all (gfm-633),
       // even though trimAutolinkEnd would strip the '_' and leave a
       // valid-looking domain.
-      const rawText = s.slice(i, j);
+      const rawText = s.slice(i, p);
       const rawM = rawText.match(/^([A-Za-z][A-Za-z0-9+.-]{1,31}):(.*)$/);
       const rawRest = rawM ? rawM[2] : '';
       const rawSlash = rawRest.indexOf('/');
@@ -2664,13 +2706,13 @@ function tryExtendedEmail(s, i, trimTrailingUnderscore) {
   // local part must not start or end with '.'
   if (s.charCodeAt(start) === 46 || s.charCodeAt(i - 1) === 46) return null;
   // scan forward for the domain
-  let j = i + 1;
-  while (j < n) {
-    const c = s.charCodeAt(j);
+  let p = i + 1;
+  while (p < n) {
+    const c = s.charCodeAt(p);
     if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45 || c === 46 || c === 95)) break;
-    j++;
+    p++;
   }
-  let end = j;
+  let end = p;
   // A domain ending in '-' or '_' is not a link at all (gfm-632);
   // a trailing '.' is trimmed and the address links.
   // Exception: when the caller confirms a trailing '_' run is an
@@ -2776,6 +2818,7 @@ function finishLink(s, i, label, dest, title, end, refs, isImage, baseBuf) {
   return { node, end, isImage: false, buf: baseBuf };
 }
 
+// True when a node list holds a (non-autolink) link, at any depth.
 function containsLink(head) {
   let nd = head.next;
   while (nd) {
@@ -2812,6 +2855,7 @@ function plainText(head) {
   return out;
 }
 
+// Plain text of one node (for image alt text).
 function plainTextNode(nd) {
   switch (nd.t) {
     case 'text': return nd.s;
@@ -3200,7 +3244,7 @@ function processEmphasis(head, dHead, s, masked, refs) {
 /* Rendering                                                           */
 /* ------------------------------------------------------------------ */
 
-// Render an inline node list to HTML.
+// Render an inline node list (starting after `head`) to HTML.
 function renderInlineNodes(head, refs) {
   let out = '';
   let nd = head.next;
@@ -3211,6 +3255,7 @@ function renderInlineNodes(head, refs) {
   return out;
 }
 
+// Render the inline nodes from `first` through `last` (inclusive).
 function renderInlineRange(first, last, refs) {
   let out = '';
   let nd = first;
@@ -3222,6 +3267,7 @@ function renderInlineRange(first, last, refs) {
   return out;
 }
 
+// Render one inline node to HTML.
 function renderInlineNode(nd, refs) {
   switch (nd.t) {
     case 'text': return escapeHtml(nd.s, false);
@@ -3253,11 +3299,17 @@ function renderInlineNode(nd, refs) {
   }
 }
 
-// Parse inline text and render it.
+// Parse inline text and render it to HTML.
 function renderInline(text, refs) {
   if (!text) return '';
   const head = parseInlineNodes(text, refs);
   return renderInlineNodes(head, refs);
+}
+
+// Render one table cell (header or body) to HTML.
+function renderTableCell(cell, align, tag, refs) {
+  return '<' + tag + (align ? ' align="' + align + '"' : '') + '>' +
+    renderInline(cell.trim(), refs) + '</' + tag + '>\n';
 }
 
 // Render a block. `tight` is true when the block sits inside a tight
@@ -3329,8 +3381,7 @@ function renderBlock(blk, refs, tight) {
     case 'table': {
       let out = '<table>\n<thead>\n<tr>\n';
       for (let i = 0; i < blk.headerCells.length; i++) {
-        out += '<th' + (blk.align[i] ? ' align="' + blk.align[i] + '"' : '') + '>' +
-          renderInline(blk.headerCells[i].trim(), refs) + '</th>\n';
+        out += renderTableCell(blk.headerCells[i], blk.align[i], 'th', refs);
       }
       out += '</tr>\n</thead>\n';
       if (blk.rows.length) {
@@ -3338,8 +3389,7 @@ function renderBlock(blk, refs, tight) {
         for (const row of blk.rows) {
           out += '<tr>\n';
           for (let i = 0; i < row.length; i++) {
-            out += '<td' + (blk.align[i] ? ' align="' + blk.align[i] + '"' : '') + '>' +
-              renderInline(row[i].trim(), refs) + '</td>\n';
+            out += renderTableCell(row[i], blk.align[i], 'td', refs);
           }
           out += '</tr>\n';
         }
@@ -3352,6 +3402,8 @@ function renderBlock(blk, refs, tight) {
   }
 }
 
+// Render a list item: its children, with paragraphs flagged so a task
+// checkbox is recognised.
 function renderItem(item, refs, tight) {
   let out = '<li>';
   for (const child of item.children) {
