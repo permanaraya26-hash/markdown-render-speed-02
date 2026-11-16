@@ -31,7 +31,33 @@ Practice set: **720/720 cases byte-identical to marked 18.1.3**
 (all 680 spec examples and all 40 generated documents pass).
 Runs the full practice set in ~1.4 s, faster than marked itself (~4 s).
 
-Stage 2 (restart) fixes (this session, recording 01a1e55e): the
+Stage 3 (final rewrite stage, this session, recording 01a1e579):
+the inline parser, renderers, table/unicode, tag scanner and block
+matchers were rewritten in a new structure while keeping 720/720:
+`parseInlineNodes` is now a dispatch over per-character handler
+functions (`scanNewline`, `scanBackslash`, `scanCodeSpan`,
+`scanEntity`, `scanLt`, `scanBracket`, `scanDelimRun`,
+`scanExtended`) with a shared `feed` buffer and a `plainSuffixOf`
+/ `dropDelimNode` local-part remover; the autolink family was split
+into `schemeAutolink` / `wwwAutolink` / `validEmailDomain` /
+`emailLocalStart` and the link family into `tryInlineLink` /
+`tryReferenceLink` / `tryShortcutLink` with a shared `walkRange`
+node walker; `scanTag` uses `skipWs` / `nameEnd` scanners;
+`splitTableRow` uses `unescapeCodeSpanPipes`; the unicode space
+test uses a singleton set + range table; `parseInlineHtml` was
+split into `scanHtmlComment` / `scanHtmlCdata` /
+`scanHtmlDeclaration` / `scanHtmlPI`; the renderers use an
+if-chain `renderInlineNode` plus `splitCheckbox` and
+`renderTableCells`; the block matchers share `skipIndent` /
+`countRun`; the flanking helpers share `firstCpOf` and
+`nodeEdgeCp`. One bug was found and fixed along the way: the
+local-part remover concatenated the pending buffer before the
+node suffix, but the buffer is the end of the output (gfm-632
+email autolinks failed until the order was corrected). Score
+stayed **720/720** throughout; `main.ts` run twice gives a
+byte-identical `html.json` (4,042,837 bytes).
+
+Stage 2 (restart) fixes (recording 01a1e55e): the
 opener-driven emStrong rewrite (Stage C) is done — `processEmphasis`
 for `*`/`_` now follows marked's algorithm (`findEmStrongCloser`
 with `m`/`f`/`y`/`R`, `bAdj`/`use` parity, leftover-inside wrapper,
