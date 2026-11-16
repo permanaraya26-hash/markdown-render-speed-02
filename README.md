@@ -27,21 +27,17 @@ MAKEFUN_INPUT_DIR=./practice/input MAKEFUN_OUTPUT_DIR=./practice/output \
 
 ## Status
 
-Practice set: **714/720 cases byte-identical to marked 18.1.3**
-(all 680 spec examples pass; 6 generated documents still differ:
-doc-09, doc-11, doc-13, doc-16, doc-28, doc-35 — all
-context-dependent emphasis masking / whitespace cases where marked's
-emStrong mask pre-pass suppresses emphasis that forms in isolation).
-Runs the full practice set in ~2 s, faster than marked itself (~4 s).
+Practice set: **720/720 cases byte-identical to marked 18.1.3**
+(all 680 spec examples and all 40 generated documents pass).
+Runs the full practice set in ~1–2 s, faster than marked itself (~4 s).
 
-Round-3 fixes (this session): fenced-code absorb in list items now
-requires a non-blank line already in the fence; tilde fences keep
-their content indent; a marker-less blank line ends a blockquote even
-when its tip is a fence; extended-autolink end uses marked's
-`_backpedal`; link labels use marked's code-span rule (a backtick run
-with no closer fails the label); delimiters inside a failed link
-label stay literal; a `www.` autolink keeps a trailing backslash; a
-table-candidate paragraph is not turned into a setext heading; a bare
-`>` line closes a nested blockquote instead of lazily continuing the
-paragraph; a `**` opener closed by `***` after an inner `*` em keeps
-the extra star inside the strong.
+Round-4 fixes (this session): implemented marked's `#n` emStrong mask
+pre-pass (`blockSkip` + `anyPunctuationOutsideCode`, verified
+byte-identical on all 5,956 delimiter-bearing paragraphs); blank
+lines inside backtick fenced code are dedented by `fenceIndent`;
+replaced the closer-driven emphasis pass with marked's opener-driven
+emStrong (`m`/`f` accounting, rule of 3, `min(k,bAdj) % 2` use rule);
+leftover delimiters move inside the wrapper and are re-lexed there,
+while a closer run is truncated to `bAdj` and its excess stays
+outside the match. The doc-30 `***` extra-star case is subsumed by
+the leftover-inside mechanism.
