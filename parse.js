@@ -2143,7 +2143,11 @@ function parseInlineNodes(s, refs) {
   }
   function addDelim(ch, len, canOpen, canClose) {
     flush();
-    const nd = { t: 'delim', ch, len, canOpen, canClose, next: null, prev: tail, dNext: null, dPrev: dTail };
+    // pos is the run's index in the inline text (== its index in the
+    // length-preserving masked copy); runStart is the run's start,
+    // preserved across a failed-opener retry so y/p/o count the
+    // consumed char (Stage C, opener-driven emStrong).
+    const nd = { t: 'delim', ch, len, canOpen, canClose, pos: i, runStart: i, next: null, prev: tail, dNext: null, dPrev: dTail };
     tail.next = nd;
     tail = nd;
     dTail.dNext = nd;
@@ -2442,7 +2446,7 @@ function parseInlineNodes(s, refs) {
     i++;
   }
   flush();
-  processEmphasis(head, dHead);
+  processEmphasis(head, dHead, masked);
   return head;
 }
 
@@ -2856,131 +2860,356 @@ function plainTextNode(nd) {
 /* Emphasis processing (delimiter-stack algorithm)                     */
 /* ------------------------------------------------------------------ */
 
-// Resolve emphasis/strong/strikethrough in the node list using the
-// CommonMark delimiter-stack algorithm. Delimiters left unmatched stay
-// as literal text.
-function processEmphasis(head, dHead) {
+/* ------------------------------------------------------------------ */
+/* Emphasis processing — marked's opener-driven emStrong (Stage C)     */
+/*                                                                     */
+/* Delimiter nodes carry pos (run index in the inline text == index   */
+/* in the length-preserving masked copy) and runStart (the run's      */
+/* start, preserved across a failed-opener retry so y/p/o count the   */
+/* consumed char). All position/flanking decisions use the masked     */
+/* text; the node list holds the original text.                        */
+/* ------------------------------------------------------------------ */
+
+// single-char tests on a one-char string ('' => false). Note the
+// gate's punctuation test is marked's ^((?![*_])[\s\p{P}\p{S}]) —
+// it matches whitespace too, so u/h use space-or-punct.
+function isPunctStr(c) { return c !== '' && isUnicodePunctCp(c.codePointAt(0)); }
+function isSpaceStr(c) { return c !== '' && isUnicodeSpaceCp(c.codePointAt(0)); }
+function isSpaceOrPunctStr(c) { return c !== '' && (isUnicodeSpaceCp(c.codePointAt(0)) || isUnicodePunctCp(c.codePointAt(0))); }
+function isAlnumStr(c) { return c !== '' && /[\p{L}\p{N}]/u.test(c); }
+
+// Recompute flanking for a delimiter run of char `ch` at position
+// `pos` (run start) with length `len` in the masked text. Used when a
+// leftover / closer-excess delimiter is re-examined in a new context.
+function delimFlanking(masked, ch, pos, len) {
+  const before = pos > 0 ? codePointBefore(masked, pos) : 10;
+  const after = pos + len < masked.length ? masked.codePointAt(pos + len) : 10;
+  return flankingFromCps(before, after, ch);
+}
+
+// Flanking from the before/after code points directly (10 = whitespace
+// / string edge). Shared by delimFlanking and by the leftover nodes,
+// whose inner-context neighbours come from the node list, not the
+// masked text.
+function flankingFromCps(before, after, ch) {
+  const beforeWS = isUnicodeSpaceCp(before);
+  const afterWS = isUnicodeSpaceCp(after);
+  const beforePunct = isUnicodePunctCp(before);
+  const afterPunct = isUnicodePunctCp(after);
+  const leftFlanking = !afterWS && (!afterPunct || beforeWS || beforePunct);
+  const rightFlanking = !beforeWS && (!beforePunct || afterWS || afterPunct);
+  let canOpen, canClose;
+  if (ch === '_') {
+    canOpen = leftFlanking && (!rightFlanking || beforePunct);
+    canClose = rightFlanking && (!leftFlanking || afterPunct);
+  } else {
+    canOpen = leftFlanking;
+    canClose = rightFlanking;
+  }
+  return { canOpen, canClose };
+}
+
+// First / last code point of a node's text (10 for a break or an
+// empty node). Used for a leftover delimiter's inner-context flanking.
+function nodeFirstCp(nd) {
+  if (!nd) return 10;
+  switch (nd.t) {
+    case 'text': case 'raw': case 'code': case 'html':
+      return nd.s.length ? nd.s.codePointAt(0) : 10;
+    case 'delim': return nd.ch.codePointAt(0);
+    case 'br': case 'soft': return 10;
+    case 'em': case 'strong': case 'del': case 'link':
+      return nodeFirstCp(nd.first);
+    case 'image': return nd.alt.length ? nd.alt.codePointAt(0) : 10;
+    default: return 10;
+  }
+}
+function nodeLastCp(nd) {
+  if (!nd) return 10;
+  switch (nd.t) {
+    case 'text': case 'raw': case 'code': case 'html':
+      return nd.s.length ? codePointBefore(nd.s, nd.s.length) : 10;
+    case 'delim': return nd.ch.codePointAt(0);
+    case 'br': case 'soft': return 10;
+    case 'em': case 'strong': case 'del': case 'link':
+      return nodeLastCp(nd.last);
+    case 'image': return nd.alt.length ? codePointBefore(nd.alt, nd.alt.length) : 10;
+    default: return 10;
+  }
+}
+
+// The RDelim first-alternative skip (marked's emStrongRDelimAst/Und
+// alternative 1): a single * inside __...__ (or _ inside **...**)
+// at the scan start is skipped, once per scan.
+const SKIP_AST_RE = /^[^_*]*?__[^_*]*?\*[^_*]*?(?=__)/;
+const SKIP_UND_RE = /^[^_*]*?\*\*[^_*]*?_[^_*]*?(?=\*\*)/;
+
+function unlinkDelim(nd) {
+  if (nd.dPrev) nd.dPrev.dNext = nd.dNext;
+  if (nd.dNext) nd.dNext.dPrev = nd.dPrev;
+  nd.dPrev = null;
+  nd.dNext = null;
+}
+
+// Find the closer for opener (a * or _ delimiter node), scanning the
+// delimiter chain forward from opener.dNext up to (not including)
+// endDelim. Returns {closer, use, bAdj} or null. Faithful to marked
+// 18.1.3's Tokenizer.emStrong, adapted from its string scan to the
+// delimiter chain (the chain nodes' canOpen/canClose play the role of
+// the RDelim regex groups).
+function findEmStrongCloser(opener, masked, endDelim) {
+  const ch = opener.ch;
+  const runStart = opener.runStart;
+  const pos = opener.pos;
+  const k = opener.len;
+  const p = runStart > 0 ? masked[runStart - 1] : '';
+  const h = p === '*' || p === '_' || isSpaceOrPunctStr(p);
+  const n = pos > 0 ? masked[pos - 1] : '';
+  const o = n === ch;
+  const u = (pos > runStart) ? h : isSpaceOrPunctStr(n);
+  const afterIdx = pos + k;
+  const afterCh = afterIdx < masked.length ? masked[afterIdx] : '';
+  const d = (afterCh !== '' && afterCh !== ch && isPunctStr(afterCh)) ? afterCh : '';
+  // intraword-_ : char after the _ run is a non-space char and the
+  // char before is alphanumeric -> no emphasis.
+  if (ch === '_' && afterCh !== '' && afterCh !== '_' && !isSpaceStr(afterCh) &&
+      n !== '' && isAlnumStr(n)) return null;
+  // gate: proceed only if no punct after the run, or no char before
+  // it, or the char before is punctuation (left-flanking).
+  if (!(!d || !n || u)) return null;
+  let m = k, f = 0;
+  const y = (pos - runStart) + k;
+  const R = p !== '' && !isSpaceStr(p) && (!!d || (ch === '*' && !h));
+  // RDelim first-alternative skip position (once per scan).
+  let skipPos = -1;
+  const q = pos + k;
+  if (q < masked.length) {
+    const sm = (ch === '*' ? SKIP_AST_RE : SKIP_UND_RE).exec(masked.slice(q));
+    if (sm) {
+      const skipped = ch === '*' ? sm[0].indexOf('*') : sm[0].indexOf('_');
+      if (skipped >= 0) skipPos = q + skipped;
+    }
+  }
+  let skipped = false;
+  let cur = opener.dNext;
+  while (cur && cur !== endDelim) {
+    if (cur.ch === ch) {
+      const b = cur.len;
+      if (!skipped && b === 1 && cur.pos === skipPos) { skipped = true; cur = cur.dNext; continue; }
+      const canO = cur.canOpen, canC = cur.canClose;
+      if (!canO && !canC) { cur = cur.dNext; continue; }
+      if (canO && !canC) { m += b; cur = cur.dNext; continue; }
+      if (canO && canC) {
+        if (o) break;
+        if (y % 3 !== 0 && (y + b) % 3 === 0) { f += b; cur = cur.dNext; continue; }
+      } else if (R) {
+        if (y % 3 !== 0 && (y + b) % 3 === 0) { f += b; cur = cur.dNext; continue; }
+      }
+      m -= b;
+      if (m > 0) { cur = cur.dNext; continue; }
+      const bAdj = Math.min(b, b + m + f);
+      const use = Math.min(k, bAdj) % 2 ? 1 : 2;
+      return { closer: cur, use, bAdj };
+    }
+    cur = cur.dNext;
+  }
+  return null;
+}
+
+// Form the em/strong wrapper for opener..closer with `use` (1 or 2).
+// Opener leftover (len-use) moves inside at the start, closer
+// leftover (bAdj-use) inside at the end (both as delimiter nodes with
+// flanking recomputed); closer excess (len-bAdj) stays outside after
+// the wrapper as a delimiter node re-examined as a possible opener.
+// The leftover nodes are placed into the node list BEFORE the inner
+// region is resolved (emStrong then del), so the recursion can pair
+// them; afterwards the inner delimiters are unlinked from the chain.
+// Returns the delimiter node to continue the outer scan from.
+function formEmStrongWrapper(opener, closer, use, bAdj, head, dHead, masked, endDelim) {
+  const ch = opener.ch;
+  const type = use === 1 ? 'em' : 'strong';
+  const openLeft = opener.len - use;
+  const closeLeft = bAdj - use;
+  const closeExcess = closer.len - bAdj;
+  // Place the leftover nodes into the node list first (so the inner
+  // recursion can pair them), then build the inner delimiter chain.
+  // Their flanking is recomputed from the inner context: the opener
+  // leftover sits at the start of the inner content (before = start)
+  // and the closer leftover at the end (after = end), so the masked
+  // text positions would give the wrong neighbours.
+  let openLeftNode = null;
+  if (openLeft > 0) {
+    openLeftNode = { t: 'delim', ch, len: openLeft, canOpen: true, canClose: false,
+      pos: opener.pos + use, runStart: opener.runStart, next: opener.next, prev: opener, dNext: null, dPrev: null };
+    if (opener.next) opener.next.prev = openLeftNode;
+    opener.next = openLeftNode;
+  }
+  let closeLeftNode = null;
+  if (closeLeft > 0) {
+    closeLeftNode = { t: 'delim', ch, len: closeLeft, canOpen: false, canClose: true,
+      pos: closer.pos + use, runStart: closer.runStart, next: closer, prev: closer.prev, dNext: null, dPrev: null };
+    if (closer.prev) closer.prev.next = closeLeftNode;
+    closer.prev = closeLeftNode;
+  }
+  if (openLeftNode) {
+    const fl = flankingFromCps(10, nodeFirstCp(openLeftNode.next), ch);
+    openLeftNode.canOpen = fl.canOpen;
+    openLeftNode.canClose = fl.canClose;
+  }
+  if (closeLeftNode) {
+    const fl = flankingFromCps(nodeLastCp(closeLeftNode.prev), 10, ch);
+    closeLeftNode.canOpen = fl.canOpen;
+    closeLeftNode.canClose = fl.canClose;
+  }
+  // Inner delimiters strictly between opener and closer, in chain order.
+  let d = opener.dNext;
+  const innerDelims = [];
+  while (d && d !== closer) { innerDelims.push(d); d = d.dNext; }
+  // Build the inner chain: leftover-opener, inner delims, leftover-closer.
+  const chainNodes = [];
+  if (openLeftNode) chainNodes.push(openLeftNode);
+  for (const nd of innerDelims) chainNodes.push(nd);
+  if (closeLeftNode) chainNodes.push(closeLeftNode);
+  const innerHead = { t: 'dhead', dNext: chainNodes[0] || null, dPrev: null };
+  for (let j = 0; j < chainNodes.length; j++) {
+    chainNodes[j].dPrev = j === 0 ? innerHead : chainNodes[j - 1];
+    chainNodes[j].dNext = j + 1 < chainNodes.length ? chainNodes[j + 1] : null;
+  }
+  // Resolve the inner region (emStrong then del) before forming the
+  // outer wrapper.
+  processEmStrongRange(innerHead, masked, null);
+  processDelRange(innerHead, masked, null);
+  // Form the wrapper over the node range opener.next .. closer.prev.
+  // (Empty when opener and closer are adjacent: then first/last are null.)
+  const first = opener.next === closer ? null : opener.next;
+  const last = closer.prev === opener ? null : closer.prev;
+  const wrap = { t: type, ch, first, last, next: null, prev: null };
+  wrap.prev = opener.prev;
+  if (opener.prev) opener.prev.next = wrap;
+  wrap.next = closer.next;
+  if (closer.next) closer.next.prev = wrap;
+  // Closer excess stays outside after the wrapper as a delimiter node.
+  let continueFrom = closer.dNext;
+  if (closeExcess > 0) {
+    const fl = delimFlanking(masked, ch, closer.pos + bAdj, closeExcess);
+    const excess = { t: 'delim', ch, len: closeExcess, canOpen: fl.canOpen, canClose: fl.canClose,
+      pos: closer.pos + bAdj, runStart: closer.runStart, next: wrap.next, prev: wrap, dNext: null, dPrev: null };
+    if (wrap.next) wrap.next.prev = excess;
+    wrap.next = excess;
+    const afterD = closer.dNext;
+    excess.dPrev = opener.dPrev;
+    excess.dNext = afterD;
+    if (opener.dPrev) opener.dPrev.dNext = excess;
+    if (afterD) afterD.dPrev = excess;
+    continueFrom = excess;
+  } else {
+    if (opener.dPrev) opener.dPrev.dNext = closer.dNext;
+    if (closer.dNext) closer.dNext.dPrev = opener.dPrev;
+  }
+  // Unlink every delimiter node left inside the wrapper from the
+  // chain (walk the node-list range, which is robust to the recursion
+  // having consumed or replaced inner delimiters).
+  let nd = first;
+  while (nd && nd !== closer) {
+    if (nd.t === 'delim') { nd.dPrev = null; nd.dNext = null; }
+    if (nd === last) break;
+    nd = nd.next;
+  }
+  return continueFrom;
+}
+
+// Retry a failed opener as a shorter run: the first char becomes
+// literal text, runStart is preserved so y/p/o count the consumed
+// char. Returns the node to continue the scan from.
+function retryEmStrongOpener(opener, head, dHead, masked) {
+  if (opener.len <= 1) return opener.dNext;
+  // emit the first char as literal text before the opener node
+  const lit = { t: 'text', s: opener.ch, next: opener, prev: opener.prev };
+  if (opener.prev) opener.prev.next = lit;
+  opener.prev = lit;
+  opener.len -= 1;
+  opener.pos += 1;
+  const fl = delimFlanking(masked, opener.ch, opener.pos, opener.len);
+  opener.canOpen = fl.canOpen;
+  opener.canClose = fl.canClose;
+  return opener;
+}
+
+// Opener-driven emStrong pass over the delimiter chain in
+// (startDelim, endDelim) — when startDelim is a dHead, from the chain
+// start. `dHead` here is a chain head whose dNext is the first node.
+function processEmStrongRange(dHead, masked, endDelim) {
+  let cur = dHead.dNext;
+  while (cur && cur !== endDelim) {
+    if ((cur.ch === '*' || cur.ch === '_') && cur.canOpen) {
+      const res = findEmStrongCloser(cur, masked, endDelim);
+      if (res) {
+        cur = formEmStrongWrapper(cur, res.closer, res.use, res.bAdj, null, dHead, masked, endDelim);
+        continue;
+      }
+      cur = retryEmStrongOpener(cur, null, dHead, masked);
+      continue;
+    }
+    cur = cur.dNext;
+  }
+}
+
+// Closer-driven del (~) pass, range-bounded: a closer inside a span
+// cannot match an opener outside it. Reuses the old closer-driven
+// matching, restricted to '~'.
+function processDelRange(dHead, masked, endDelim) {
   let closer = dHead.dNext;
-  while (closer) {
-    if (!closer.canClose) { closer = closer.dNext; continue; }
-    // look back for an opener with the same character
+  while (closer && closer !== endDelim) {
+    if (closer.ch !== '~' || !closer.canClose) { closer = closer.dNext; continue; }
     let opener = closer.dPrev;
     let found = null;
     while (opener && opener !== dHead) {
-      if (opener.ch === closer.ch && opener.canOpen) {
-        // Odd-match rule (CommonMark rule 9/10): when either
-        // delimiter can both open and close, the sum of the lengths
-        // must not be a multiple of 3 unless both lengths are.
-        const eitherBoth = (opener.canOpen && opener.canClose) ||
-          (closer.canOpen && closer.canClose);
-        if (eitherBoth && (opener.len + closer.len) % 3 === 0 &&
-            (opener.len % 3 !== 0 || closer.len % 3 !== 0)) {
-          opener = opener.dPrev;
-          continue;
-        }
-        found = opener;
-        break;
-      }
+      if (opener.ch === '~' && opener.canOpen) { found = opener; break; }
       opener = opener.dPrev;
     }
     if (!found) { closer = closer.dNext; continue; }
-    // A lone closer (len 1) must not steal a delimiter from a
-    // multi-char opener (len >= 2) when an inner emphasis span has
-    // already formed between them: **a *b* c** forms <strong> (the
-    // inner <em>b</em> blocks the steal), while **a b* c** (no inner
-    // span) does steal. Skip the closer so the opener can match a
-    // later multi-char closer instead.
-    if (closer.len === 1 && found.len >= 2) {
-      let hasInnerSpan = false;
-      for (let nd = found.next; nd && nd !== closer; nd = nd.next) {
-        if (nd.t === 'em' || nd.t === 'strong' || nd.t === 'del') { hasInnerSpan = true; break; }
-      }
-      if (hasInnerSpan) { closer = closer.dNext; continue; }
-    }
-    // An outer single '*' delimiter cannot close across an inner
-    // <strong> when the inner opener was preceded by whitespace AND
-    // the inner closer is followed by a word character: *a **b**c*
-    // stays literal, but *foo**bar**baz* (no space before inner) and
-    // *a **b** c* (space after inner) both form <em>. This rule is
-    // '*' only: a '_' outer DOES form across such a strong
-    // (_large <strong>data</strong>not_ -> <em>). Only a following
-    // TEXT node counts.
-    if (closer.ch === '*' && closer.len === 1 && found.len === 1) {
-      let blocked = false;
-      for (let nd = found.next; nd && nd !== closer; nd = nd.next) {
-        if (nd.t === 'strong') {
-          const pv = nd.prev;
-          const nx = nd.next;
-          const beforeWS = pv && pv.t === 'text' && pv.s.length && isUnicodeSpaceCp(pv.s.charCodeAt(pv.s.length - 1));
-          const afterWord = nx && nx.t === 'text' && nx.s.length && isWordChar(nx.s.charCodeAt(0));
-          if (beforeWS && afterWord) { blocked = true; break; }
-        }
-      }
-      if (blocked) { closer = closer.dNext; continue; }
-    }
     const use = (found.len >= 2 && closer.len >= 2) ? 2 : 1;
-    const type = closer.ch === '~' ? 'del' : (use === 1 ? 'em' : 'strong');
-    // marked's emStrong m/f accounting (doc-30): when a '**' opener
-    // is closed by a run of 3+ '*' and an inner '*' <em> sits between
-    // them with no space before the closer, the closer consumes 3
-    // stars and the extra one lands as literal text INSIDE the strong
-    // (**a *b*c*** -> <strong>a <em>b</em>c*</strong>). Without the
-    // inner em (**foo***) or with a space before the closer
-    // (**a *b* c***) the extra star stays outside (normal path).
-    // Only a '*' <em> counts (an inner strong or '_' <em> does not
-    // trigger it: **a **b**c*** and **a _b_c*** keep the star out).
-    let extraStarInside = null;
-    if (use === 2 && closer.ch === '*' && closer.len >= 3) {
-      let hasStarEm = false;
-      for (let nd = found.next; nd && nd !== closer; nd = nd.next) {
-        if (nd.t === 'em' && nd.ch === '*') { hasStarEm = true; break; }
-      }
-      const before = closer.prev;
-      const noSpaceBefore = before && before.t === 'text' && before.s.length > 0 &&
-        !isUnicodeSpaceCp(before.s.charCodeAt(0));
-      if (hasStarEm && noSpaceBefore) {
-        extraStarInside = { t: 'text', s: '*', next: closer, prev: before };
-        before.next = extraStarInside;
-        closer.prev = extraStarInside;
-      }
-    }
-    const wrap = { t: type, ch: closer.ch, first: found.next, last: closer.prev, next: null, prev: null };
+    const wrap = { t: 'del', ch: '~', first: found.next, last: closer.prev, next: null, prev: null };
     found.len -= use;
-    closer.len -= extraStarInside ? 3 : use;
-    // Remove the delimiters strictly between the opener and closer
-    // from the delimiter chain: they are now inside the emphasis
-    // span and cannot match outside it (cm-469, cm-429/431).
-    let d = found.dNext;
-    while (d && d !== closer) {
-      const nxt = d.dNext;
-      d.dPrev.dNext = d.dNext;
-      if (d.dNext) d.dNext.dPrev = d.dPrev;
-      d = nxt;
+    closer.len -= use;
+    let dd = found.dNext;
+    while (dd && dd !== closer) {
+      const nx = dd.dNext;
+      if (dd.dPrev) dd.dPrev.dNext = dd.dNext;
+      if (dd.dNext) dd.dNext.dPrev = dd.dPrev;
+      dd = nx;
     }
-    // splice the wrapper into the node list
     if (found.len > 0) {
       wrap.prev = found;
       found.next = wrap;
     } else {
       wrap.prev = found.prev;
-      found.prev.next = wrap;
-      found.dPrev.dNext = found.dNext;
+      if (found.prev) found.prev.next = wrap;
+      if (found.dPrev) found.dPrev.dNext = found.dNext;
       if (found.dNext) found.dNext.dPrev = found.dPrev;
     }
-    let nextCloser = closer.dNext;
+    const nextCloser = closer.dNext;
     if (closer.len > 0) {
       wrap.next = closer;
       closer.prev = wrap;
     } else {
       wrap.next = closer.next;
       if (closer.next) closer.next.prev = wrap;
-      closer.dPrev.dNext = closer.dNext;
+      if (closer.dPrev) closer.dPrev.dNext = closer.dNext;
       if (closer.dNext) closer.dNext.dPrev = closer.dPrev;
     }
-    // A closer with leftover length is re-examined (it may match
-    // another opener, e.g. ****foo****); a fully used closer moves on.
     closer = closer.len > 0 ? closer : nextCloser;
   }
+}
+
+// Resolve emphasis/strong/strikethrough in the node list. Marked's
+// opener-driven emStrong runs first for * and _, then the
+// closer-driven del pass runs for ~ over the whole list (and inside
+// every emphasis span, via the recursion in formEmStrongWrapper).
+// Delimiters left unmatched stay as literal text.
+function processEmphasis(head, dHead, masked) {
+  processEmStrongRange(dHead, masked, null);
+  processDelRange(dHead, masked, null);
 }
 
 /* ------------------------------------------------------------------ */
