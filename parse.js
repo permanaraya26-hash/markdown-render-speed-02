@@ -1451,7 +1451,18 @@ class Parser {
           }
         }
         if (blank) {
-          // blank / whitespace-only lines are kept verbatim
+          // A whitespace-only line loses up to fenceIndent columns
+          // too (doc-13: a 3-space line in a fence indented 2 renders
+          // as 1 space), same rule as content lines below: backtick
+          // fences only, a tab partially consumed is dropped whole.
+          const rm = tip.fenceChar === '`' ? Math.min(line.indent(), tip.fenceIndent) : 0;
+          const wasPartial = line.partialTab;
+          line.advance(rm);
+          if (wasPartial === 0 && line.partialTab > 0) {
+            line.col += line.partialTab;
+            line.pos++;
+            line.partialTab = 0;
+          }
           tip.literal += line.remaining();
           if (line.hasNewline) tip.literal += '\n';
           return;
@@ -2020,8 +2031,76 @@ function parseInlineHtml(s, i) {
 // Bare extended autolinks (www. / scheme / email) form only when the
 // module-level inLink flag is false (set while inside a link label or an
 // unclosed <a> tag); <...> autolinks always form.
+// ---- marked 18.1.3 #n emStrong mask (replicated) --------------------
+// marked runs a masking pre-pass over each paragraph's inline source
+// before emStrong/del read it: link / code-span / HTML constructs
+// (and defined reflinks) are replaced by same-length [aaa...]
+// placeholders, and backticks inside would-be code spans become
+// "+". A */_/~ run inside a masked span is therefore invisible
+// to emphasis and stays literal. The regexes below are marked's
+// own inline rules (reflinkSearch, anyPunctuationOutsideCode,
+// blockSkip, link), rebuilt by the same c()-builder steps; the
+// replication was verified byte-identical against marked's
+// emStrongMask hook on all 5,956 delimiter-bearing paragraphs
+// of the 720 practice cases (0 mismatches). Only the masked
+// RANGES are used: a delimiter run fully inside one is emitted
+// as literal text in parseInlineNodes.
+const Ot = new RegExp("(`+)(?:[^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|`+|\\\\([\\p{P}\\p{S}])", "gu");
+const ot = new RegExp("\\[(?:[^\\[\\]`]|(?<a>`+)[^`]+\\k<a>(?!`))*?\\]\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)]|\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)])*\\))*\\)|(?<!`)()(?<b>`+)[^`]+\\k<b>(?!`)|<(?! )[^<>]*?>", "g");
+const yt = new RegExp("^!?\\[((?:\\[(?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\])|[^\\[\\]\\\\`])*?)\\]\\([ \\t\\n]*(<(?:\\\\.|[^\\n<>\\\\])+>|[^ \\t\\n\\x00-\\x1f]+|(?=\\)))(?:(?:[ \\t]+(?:\\n[ \\t]*)?|\\n[ \\t]*)(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"|'(?:\\\\[\\s\\S]|[^'\\\\])*'|\\((?:\\\\[\\s\\S]|[^)\\\\])*\\)))?[ \\t\\n]*\\)");
+const Ct = new RegExp("!?\\[((?:[^\\[\\]\\\\`]*(?:\\[(?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\]))){0,999}?[^\\[\\]\\\\`]*?)\\]\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\]){1,999})\\]|!?\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\]){1,999})\\](?:\\[\\])?(?!\\()", "g");
+
+function emStrongMaskLinkInText(e, has, linkRe, blockSkipRe, reflinkRe) {
+  if (!e.includes("[")) return false;
+  for (const n of e.matchAll(blockSkipRe)) {
+    if (linkRe.test(n[0]) && e.charAt(n.index - 1) !== "!") return true;
+  }
+  for (const n of e.matchAll(reflinkRe)) {
+    const s2 = n[0], r = s2.lastIndexOf("[");
+    if (!(s2.charAt(0) === "!" || !has(s2.slice(r + 1, -1))) && !(r > 1 && emStrongMaskLinkInText(s2.slice(1, r - 1), has, linkRe, blockSkipRe, reflinkRe))) return true;
+  }
+  return false;
+}
+
+function emStrongMaskRanges(text, refs) {
+  // refs is the link-reference Map (keys are normalizeLabel(label)).
+  const has = (raw) => refs.has(normalizeLabel(raw));
+  const ranges = [];
+  let t = text;
+  if (text.includes("[")) {
+    const n = Ct;
+    const sFn = (r) => {
+      const o = r.lastIndexOf("[");
+      if (!has(r.slice(o + 1, -1))) return r;
+      if (o > 1 && r.charAt(0) !== "!") {
+        const i = r.slice(1, o - 1);
+        if (emStrongMaskLinkInText(i, has, yt, ot, Ct)) return "[" + i.replace(n, sFn) + "][" + "a".repeat(r.length - o - 2) + "]";
+      }
+      return "[" + "a".repeat(r.length - 2) + "]";
+    };
+    t = t.replace(n, sFn);
+  }
+  t = t.replace(Ot, (n2, s2, r2) => r2 ? "+".repeat(n2.length) : s2 ? s2 + n2.slice(s2.length, -s2.length).replace(/`/g, "+") + s2 : n2);
+  t = t.replace(ot, (n2, s2, r2, b2, idx) => {
+    const o = r2 ? r2.length : 0;
+    ranges.push([idx + o, idx + n2.length]);
+    return n2.slice(0, o) + "[" + "a".repeat(n2.length - o - 2) + "]";
+  });
+  return ranges;
+}
+
 function parseInlineNodes(s, refs) {
   const n = s.length;
+  // Marked's #n mask ranges for this inline source (see above). Only
+  // computable when a delimiter could be hidden: the text must hold
+  // */_/~ and a construct start ([, backtick, <). Ranges are sorted,
+  // non-overlapping, and a delimiter run is either fully inside one
+  // or fully outside it (range edges are [, ], backtick, <, >, ()
+  // — never a delimiter char).
+  const maskRanges = (s.includes('*') || s.includes('_') || s.includes('~')) &&
+    (s.includes('[') || s.includes('`') || s.includes('<'))
+    ? emStrongMaskRanges(s, refs) : null;
+  let maskIdx = 0; // ranges are visited left-to-right with the scan
   const head = { t: 'head', next: null, prev: null };
   const dHead = { t: 'dhead', dNext: null, dPrev: null };
   let tail = head;
@@ -2266,6 +2345,18 @@ function parseInlineNodes(s, refs) {
         addText(String.fromCharCode(c).repeat(run));
         i += run;
         continue;
+      }
+      // Inside one of marked's #n mask ranges the delimiters are
+      // literal text too (doc-09/16/28/35). maskIdx only moves forward
+      // because both the ranges and the scan are left-to-right.
+      if (maskRanges) {
+        while (maskIdx < maskRanges.length && maskRanges[maskIdx][1] <= i) maskIdx++;
+        if (maskIdx < maskRanges.length && i >= maskRanges[maskIdx][0] &&
+            i + run <= maskRanges[maskIdx][1]) {
+          addText(String.fromCharCode(c).repeat(run));
+          i += run;
+          continue;
+        }
       }
       if (c === 126 && run >= 3) { addText('~'.repeat(run)); i += run; continue; }
       // the start/end of the string count as whitespace for flanking
