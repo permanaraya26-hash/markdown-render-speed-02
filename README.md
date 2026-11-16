@@ -27,16 +27,18 @@ MAKEFUN_INPUT_DIR=./practice/input MAKEFUN_OUTPUT_DIR=./practice/output \
 
 ## Status
 
-Practice set: **720/720 cases byte-identical to marked 18.1.3**
-(all 680 spec examples and all 40 generated documents pass).
-Runs the full practice set in ~1 s, faster than marked itself (~4 s).
+Practice set: **719/720 cases byte-identical to marked 18.1.3**
+(all 680 spec examples pass; 1 generated document still differs:
+doc-11 — the opener-driven emStrong rewrite, left for the next
+stage). Runs the full practice set in ~1 s, faster than marked
+itself (~4 s).
 
-Round-7 fixes (this session): fenced-code blank lines in backtick
-fences lose up to `fenceIndent` columns like content lines (doc-13);
-the `emStrong` mask pre-pass replicates marked's `#n` hook with its
-own rule regexes, so delimiters inside links, code spans and HTML
-stay literal (doc-09, doc-16, doc-28, doc-35); emphasis is resolved
-with marked's opener-driven emStrong algorithm — the `m`/`f`/`y`
-scan, rule of 3, `bAdj` truncation and `use` parity, leftovers
-inside the wrapper and closer excess outside (doc-11); `~~` del
-resolves inside emphasis spans as well as at the top level.
+Stage 1 fixes (this session, recording 01a1e54a): fenced-code
+blank lines are dedented like content lines in backtick fences
+(doc-13); marked's `#n` emStrong mask pre-pass is implemented
+verbatim from the live Lexer rules (doc-09/16/28/35); the
+character helpers, entity readers and `escapeHtml`/`cleanUrl` were
+rewritten around a shared run scanner and range tables; `main.ts`
+now factors out `loadCases`/`renderAll`, tolerates a
+`{cases: [...]}` wrapper, validates each render, writes atomically
+via temp+rename, and reports the case count and elapsed time.
