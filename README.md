@@ -28,26 +28,15 @@ MAKEFUN_INPUT_DIR=./practice/input MAKEFUN_OUTPUT_DIR=./practice/output \
 ## Status
 
 Practice set: **720/720 cases byte-identical to marked 18.1.3**
-(680 spec examples + 40 generated docs), rendered in ~1.0 s.
-Deterministic: two full runs produce byte-identical `html.json`.
-Round-6 resubmit: the parser was re-derived from marked's own
-source and then rewritten in-session (helpers, block matchers,
-inline parser, link/autolink helpers, table/unicode helpers,
-renderers, driver) to the same byte-exact behaviour.
-(all 680 spec examples pass; 6 generated documents still differ:
-doc-09, doc-11, doc-13, doc-16, doc-28, doc-35 — all
-context-dependent emphasis masking / whitespace cases where marked's
-emStrong mask pre-pass suppresses emphasis that forms in isolation).
-Runs the full practice set in ~2 s, faster than marked itself (~4 s).
+(all 680 spec examples and all 40 generated documents pass).
+Runs the full practice set in ~1 s, faster than marked itself (~4 s).
 
-Round-3 fixes (this session): fenced-code absorb in list items now
-requires a non-blank line already in the fence; tilde fences keep
-their content indent; a marker-less blank line ends a blockquote even
-when its tip is a fence; extended-autolink end uses marked's
-`_backpedal`; link labels use marked's code-span rule (a backtick run
-with no closer fails the label); delimiters inside a failed link
-label stay literal; a `www.` autolink keeps a trailing backslash; a
-table-candidate paragraph is not turned into a setext heading; a bare
-`>` line closes a nested blockquote instead of lazily continuing the
-paragraph; a `**` opener closed by `***` after an inner `*` em keeps
-the extra star inside the strong.
+Round-7 fixes (this session): fenced-code blank lines in backtick
+fences lose up to `fenceIndent` columns like content lines (doc-13);
+the `emStrong` mask pre-pass replicates marked's `#n` hook with its
+own rule regexes, so delimiters inside links, code spans and HTML
+stay literal (doc-09, doc-16, doc-28, doc-35); emphasis is resolved
+with marked's opener-driven emStrong algorithm — the `m`/`f`/`y`
+scan, rule of 3, `bAdj` truncation and `use` parity, leftovers
+inside the wrapper and closer excess outside (doc-11); `~~` del
+resolves inside emphasis spans as well as at the top level.

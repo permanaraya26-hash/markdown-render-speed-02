@@ -6,53 +6,49 @@
 // directory: a JSON array of the HTML strings, one per case, in the
 // same order as the cases. Outside a container, MAKEFUN_INPUT_DIR and
 // MAKEFUN_OUTPUT_DIR stand in for /input and /output.
-//
-// Cases may arrive as a bare JSON array or wrapped in an object with a
-// `cases` field; both shapes are accepted so the driver is robust to
-// either harness layout.
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Read cases.json and return the case array, accepting either a bare
-// array or a {cases: [...]} wrapper.
-function loadCases(): { id: string; markdown: string }[] {
-  const raw = readFileSync(join(INPUT_DIR, 'cases.json'), 'utf8');
-  const data: unknown = JSON.parse(raw);
-  const cases = Array.isArray(data) ? data : (data as { cases?: unknown }).cases;
-  if (!Array.isArray(cases)) {
-    throw new Error(`cases.json must hold an array (or {cases: [...]}), got ${typeof data}`);
+// Load the case list. Accepts either a bare JSON array of cases or an
+// object wrapping it under `cases` (the harness ships the bare array;
+// the wrapper form is tolerated so a repackaged input still runs).
+function loadCases(dir) {
+  const raw = readFileSync(join(dir, 'cases.json'), 'utf8');
+  const data = JSON.parse(raw);
+  const list = Array.isArray(data) ? data : data?.cases;
+  if (!Array.isArray(list)) {
+    throw new Error(`cases.json must hold an array, got ${typeof data}`);
   }
-  return cases as { id: string; markdown: string }[];
+  return list;
 }
 
-const cases = loadCases();
-
-// Pre-size the output so the 720 renders land by index with no
-// push growth; each case is rendered alone, in order. Every render
-// must come back a string — a non-string would mean parse() broke
-// its contract, so fail loudly instead of writing bad output.
-const html: string[] = new Array(cases.length);
-for (let k = 0; k < cases.length; k++) {
-  const c = cases[k];
-  if (typeof c.markdown !== 'string') {
-    throw new Error(`case ${c?.id ?? k} has no markdown string`);
+// Render every case alone, in order, into a pre-sized output array
+// (no push growth over 720 renders).
+function renderAll(list) {
+  const html = new Array(list.length);
+  for (let k = 0; k < list.length; k++) {
+    const c = list[k];
+    if (typeof c?.markdown !== 'string') {
+      throw new Error(`case ${c?.id ?? k} has no markdown string`);
+    }
+    html[k] = parse(c.markdown);
   }
-  const out = parse(c.markdown);
-  if (typeof out !== 'string') {
-    throw new Error(`case ${c?.id ?? k} rendered to ${typeof out}, not a string`);
-  }
-  html[k] = out;
+  return html;
 }
 
-// Write atomically: land the bytes in a temp file beside the target,
-// then rename, so a crash mid-write never leaves a partial html.json.
-mkdirSync(OUTPUT_DIR, { recursive: true });
-const target = join(OUTPUT_DIR, 'html.json');
-const temp = target + '.tmp';
-writeFileSync(temp, JSON.stringify(html));
-renameSync(temp, target);
+function main() {
+  const started = Date.now();
+  const list = loadCases(INPUT_DIR);
+  const html = renderAll(list);
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+  writeFileSync(join(OUTPUT_DIR, 'html.json'), JSON.stringify(html));
+  const ms = Date.now() - started;
+  console.error(`markdown-render-speed-02: rendered ${list.length} cases in ${ms} ms`);
+}
+
+main();
