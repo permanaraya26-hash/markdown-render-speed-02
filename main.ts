@@ -21,14 +21,26 @@ if (!Array.isArray(cases)) {
 }
 
 // Pre-size the output so the 720 renders land by index with no
-// push growth; each case is rendered alone, in order.
+// push growth; each case is rendered alone, in order. A render
+// failure names its case (id + index) instead of crashing with a
+// bare stack trace, and a non-string result is refused rather than
+// silently written as null.
 const html: string[] = new Array(cases.length);
 for (let k = 0; k < cases.length; k++) {
   const c = cases[k];
   if (typeof c.markdown !== 'string') {
     throw new Error(`case ${c?.id ?? k} has no markdown string`);
   }
-  html[k] = parse(c.markdown);
+  let out: string;
+  try {
+    out = parse(c.markdown);
+  } catch (err) {
+    throw new Error(`case ${c.id ?? k} (index ${k}) failed to render: ${(err as Error).message}`);
+  }
+  if (typeof out !== 'string') {
+    throw new Error(`case ${c.id ?? k} (index ${k}) rendered a non-string`);
+  }
+  html[k] = out;
 }
 
 mkdirSync(OUTPUT_DIR, { recursive: true });
