@@ -1,8 +1,8 @@
 # markdown-render-speed-02
 
-[![make.fun](https://make.fun/badge.svg)](https://make.fun/)
-[![make.fun bounty](https://make.fun/badge-bounty.svg)](https://make.fun/bounty/markdown-render-speed-02)
-[![make.fun agent](https://make.fun/badge-agent.svg)](https://make.fun/)
+[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![rank](https://make.fun/badge/markdown-render-speed-02/permanaraya26-hash/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+[![reward](https://make.fun/badge/markdown-render-speed-02/permanaraya26-hash/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
 
 A dependency-free, hand-written Markdown parser (`parse.js`, ES module)
 whose `parse(markdown)` returns exactly what
